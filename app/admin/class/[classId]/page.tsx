@@ -20,11 +20,13 @@ export default function ClassDetailPage() {
   const [submissions, setSubmissions] = useState<Submission[]>([])
   const [loading, setLoading] = useState(true)
   const [selected, setSelected] = useState<Set<string>>(new Set())
-  const [confirmDelete, setConfirmDelete] = useState<'selected' | 'all' | null>(null)
+  const [confirmDelete, setConfirmDelete] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const [authPassword, setAuthPassword] = useState('')
   const [authed, setAuthed] = useState(false)
   const [previewSubmission, setPreviewSubmission] = useState<Submission | null>(null)
+  const [downloading, setDownloading] = useState(false)
+  const [downloadProgress, setDownloadProgress] = useState<{ current: number; total: number } | null>(null)
 
   useEffect(() => {
     const pwd = sessionStorage.getItem('admin_password')
@@ -44,9 +46,9 @@ export default function ClassDetailPage() {
     setSelected(selected.size === submissions.length ? new Set() : new Set(submissions.map(s => s.id)))
   }
 
-  async function handleDelete(mode: 'selected' | 'all') {
+  async function handleDelete() {
     setDeleting(true)
-    const ids = mode === 'all' ? submissions.map(s => s.id) : Array.from(selected)
+    const ids = Array.from(selected)
     const res = await fetch(`/api/admin/${classId}?password=${encodeURIComponent(authPassword)}`, {
       method: 'DELETE',
       headers: { 'Content-Type': 'application/json' },
@@ -54,16 +56,51 @@ export default function ClassDetailPage() {
     })
     if (res.ok) { setSubmissions(prev => prev.filter(s => !ids.includes(s.id))); setSelected(new Set()) }
     setDeleting(false)
-    setConfirmDelete(null)
+    setConfirmDelete(false)
   }
 
-  async function handleDownloadAll() {
-    for (const s of submissions) {
+  async function handleDownloadSelected() {
+    if (downloading) return
+
+    const toDownload = submissions.filter(s => selected.has(s.id))
+    if (toDownload.length === 0) return
+
+    const JSZip = (await import('jszip')).default
+    const zip = new JSZip()
+
+    setDownloading(true)
+    setDownloadProgress({ current: 0, total: toDownload.length })
+
+    try {
+      for (let i = 0; i < toDownload.length; i++) {
+        const s = toDownload[i]
+        setDownloadProgress({ current: i + 1, total: toDownload.length })
+
+        // Fetch the PDF as blob
+        const response = await fetch(s.pdf_url)
+        const blob = await response.blob()
+
+        // Sanitize filename: replace characters not allowed in filenames
+        const safeName = s.nama.replace(/[\/\\:*?"<>|]/g, '_')
+        const filename = `${safeName}.pdf`
+
+        zip.file(filename, blob)
+      }
+
+      // Generate the zip and trigger download
+      const zipBlob = await zip.generateAsync({ type: 'blob' })
+      const url = URL.createObjectURL(zipBlob)
       const a = document.createElement('a')
-      a.href = s.pdf_url
-      a.target = '_blank'
+      a.href = url
+      a.download = `${className.replace(/\s+/g, '_')}_submissions.zip`
       a.click()
-      await new Promise(r => setTimeout(r, 300))
+      URL.revokeObjectURL(url)
+    } catch (err) {
+      console.error('Download failed:', err)
+      alert('Gagal mengunduh file. Coba lagi.')
+    } finally {
+      setDownloading(false)
+      setDownloadProgress(null)
     }
   }
 
@@ -118,29 +155,38 @@ export default function ClassDetailPage() {
                 </div>
                 Select All
               </button>
-              <button onClick={handleDownloadAll}
-                className="flex items-center gap-1.5 text-xs font-medium text-blue-600 bg-blue-50 hover:bg-blue-100 border border-blue-200 px-3 py-2 rounded-lg transition-colors">
-                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
-                </svg>
-                Download All
-              </button>
               {selected.size > 0 && (
-                <button onClick={() => setConfirmDelete('selected')}
-                  className="flex items-center gap-1.5 text-xs font-medium text-red-600 bg-red-50 hover:bg-red-100 border border-red-200 px-3 py-2 rounded-lg transition-colors">
-                  <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                  </svg>
-                  Delete ({selected.size})
-                </button>
+                <>
+                  <button
+                    onClick={handleDownloadSelected}
+                    disabled={downloading}
+                    className="flex items-center gap-1.5 text-xs font-medium text-blue-600 bg-blue-50 hover:bg-blue-100 border border-blue-200 px-3 py-2 rounded-lg transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+                  >
+                    {downloading ? (
+                      <>
+                        <div className="w-3.5 h-3.5 border-2 border-blue-600 border-t-transparent rounded-full animate-spin" />
+                        {downloadProgress
+                          ? `${downloadProgress.current}/${downloadProgress.total}`
+                          : 'Preparing...'}
+                      </>
+                    ) : (
+                      <>
+                        <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                        </svg>
+                        Download ({selected.size}) .zip
+                      </>
+                    )}
+                  </button>
+                  <button onClick={() => setConfirmDelete(true)}
+                    className="flex items-center gap-1.5 text-xs font-medium text-red-600 bg-red-50 hover:bg-red-100 border border-red-200 px-3 py-2 rounded-lg transition-colors">
+                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                    </svg>
+                    Delete ({selected.size})
+                  </button>
+                </>
               )}
-              <button onClick={() => setConfirmDelete('all')}
-                className="flex items-center gap-1.5 text-xs font-medium text-red-600 bg-white hover:bg-red-50 border border-gray-200 px-3 py-2 rounded-lg transition-colors">
-                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                </svg>
-                Delete All
-              </button>
             </div>
           )}
         </div>
@@ -217,6 +263,25 @@ export default function ClassDetailPage() {
         )}
       </main>
 
+      {/* Download progress overlay */}
+      {downloading && downloadProgress && (
+        <div className="fixed bottom-6 right-6 z-50 bg-white border border-gray-200 rounded-2xl shadow-xl px-5 py-4 flex items-center gap-4 min-w-60">
+          <div className="w-9 h-9 bg-blue-50 rounded-xl flex items-center justify-center shrink-0">
+            <div className="w-4 h-4 border-2 border-blue-600 border-t-transparent rounded-full animate-spin" />
+          </div>
+          <div className="flex-1">
+            <p className="text-sm font-semibold text-gray-800">Menyiapkan ZIP...</p>
+            <div className="mt-1.5 h-1.5 bg-gray-100 rounded-full overflow-hidden">
+              <div
+                className="h-full bg-blue-500 rounded-full transition-all duration-300"
+                style={{ width: `${(downloadProgress.current / downloadProgress.total) * 100}%` }}
+              />
+            </div>
+            <p className="text-[11px] text-gray-400 mt-1">{downloadProgress.current} / {downloadProgress.total} file</p>
+          </div>
+        </div>
+      )}
+
       {/* Confirm delete modal */}
       {confirmDelete && (
         <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 px-4">
@@ -227,13 +292,13 @@ export default function ClassDetailPage() {
               </svg>
             </div>
             <h3 className="text-base font-bold text-gray-800 text-center mb-1">
-              {confirmDelete === 'all' ? 'Delete All Submissions?' : `Delete ${selected.size} Submission${selected.size > 1 ? 's' : ''}?`}
+              {`Delete ${selected.size} Submission${selected.size > 1 ? 's' : ''}?`}
             </h3>
             <p className="text-sm text-gray-500 text-center mb-5">This action cannot be undone.</p>
             <div className="flex gap-2">
-              <button onClick={() => setConfirmDelete(null)}
+              <button onClick={() => setConfirmDelete(false)}
                 className="flex-1 bg-gray-100 hover:bg-gray-200 text-gray-700 font-medium py-2.5 rounded-xl text-sm transition-colors">Cancel</button>
-              <button onClick={() => handleDelete(confirmDelete)} disabled={deleting}
+              <button onClick={() => handleDelete()} disabled={deleting}
                 className="flex-1 bg-red-600 hover:bg-red-700 disabled:bg-red-300 text-white font-medium py-2.5 rounded-xl text-sm transition-colors">
                 {deleting ? 'Deleting...' : 'Delete'}
               </button>
